@@ -193,6 +193,7 @@ class ReuseBufferInserter final : public IRMutator {
         // find the min_expr and max_expr for each dimension
         Array<Expr> reuse_shape;
         size_t ndim = expr_list[0].size();
+
         for (size_t dim = 0; dim < ndim; dim++) {
           // find the bound
           // e.g. x+r with {r=[0, 2], c=[0, 2], x=[0, 7]}
@@ -201,15 +202,25 @@ class ReuseBufferInserter final : public IRMutator {
           // min_expr = y, max_expr = y+2
           // e.g. [x, x+1, x+2] with {}
           // min_expr = x, max_expr = x+2
+          LOG(INFO) << "expr_list[0][" << dim << "] " << expr_list[0][dim];
           Expr min_expr = substitute(min_map, expr_list[0][dim]);
           Expr max_expr = substitute(max_map, expr_list[0][dim]);
+          LOG(INFO) << "min map: " << min_map.size();
+          LOG(INFO) << "max map: " << max_map.size();
+          LOG(INFO) << "min expr[0][" << dim << "] " << min_expr;
+          LOG(INFO) << "max expr[0][" << dim << "] " << max_expr;
           size_t min_index = 0;
           for (size_t i = 1; i < expr_list.size(); i++) {
             Expr new_min_expr = substitute(min_map, expr_list[i][dim]);
             Expr new_max_expr = substitute(max_map, expr_list[i][dim]);
+            LOG(INFO) << "expr_list[" << i << "][" << dim << "] " << expr_list[i][dim];
+            LOG(INFO) << "new min expr[" << i << "][" << dim << "] " << new_min_expr;
+            LOG(INFO) << "new max expr[" << i << "][" << dim << "] " << new_max_expr; 
             // TODO: for comparison, mod is not allowed
             Expr min_diff = Simplify(new_min_expr - min_expr);
             Expr max_diff = Simplify(new_max_expr - max_expr);
+            LOG(INFO) << "min diff[" << i << "][" << dim << "] " << min_diff;
+            LOG(INFO) << "max diff[" << i << "][" << dim << "] " << max_diff;
             if (!is_const(min_diff) || !is_const(max_diff))
               LOG(FATAL) << "The bound of the reuse region cannot be determined";
             if (is_one(Simplify(min_diff <= 0))) {
@@ -218,22 +229,31 @@ class ReuseBufferInserter final : public IRMutator {
             }
             if (is_one(Simplify(max_diff > 0))) max_expr = new_max_expr;
           }
-          // check if the bounde is constant
+          
+          // LOG(INFO) << "max expr " << max_expr;
+          // LOG(INFO) << "min expr " << min_expr;
+          // LOG(INFO) << "min index " << min_index;
+          // check if the bound is constant
           // e.g. x+r => diff_expr = 10
           // e.g. y+c => diff_expr = 3
-          Expr diff_expr = Simplify(max_expr - min_expr + 1);
+          Expr diff_expr = Simplify(max_expr - min_expr + 1);  
+          
+          // LOG(INFO) << "diff expr " << diff_expr;
           if (!is_const(diff_expr)) // e.g. y*(y+c) would be illegal
             LOG(FATAL) << "Irregular access pattern is not yet supported";
           // check if the specified axis is reused by running the next iteration
           std::map<const Variable*, Expr> next_subst;
           next_subst[op->loop_var.get()] = op->loop_var + 1;
+          
           // first check if the axis is the specified reuse axis
           // e.g. y => y+1
           Expr next_min = substitute(next_subst, min_expr);
+          // LOG(INFO) << "next min " << next_min;
           Expr next_diff = Simplify(next_min - min_expr);
+          // LOG(INFO) << "next diff " << next_diff;
           if (!is_const(next_diff)) // e.g. y*y+c would be illegal
             LOG(FATAL) << "Irregular access pattern is not yet supported";
-          // then check if we there is reuse in this axis
+          // then check if there is reuse in this axis
           // e.g. y+c => incr_index_diff = 1
           if (!is_zero(next_diff)) {
             if (!is_one(next_diff)) // e.g. 2*y+c would be illegal
@@ -247,8 +267,10 @@ class ReuseBufferInserter final : public IRMutator {
           }
           if (auto imm = diff_expr.as<IntImm>())
             diff_expr = IntImm::make(Int(32), imm->value);
-          reuse_shape.push_back(diff_expr);
+          reuse_shape.push_back(diff_expr); 
           min_list.push_back(expr_list[min_index][dim]);
+          // LOG(INFO) << "min_list[" << min_index << "][" << dim << "]" << expr_list[min_index][dim];
+          
         } // end for each dim
         if (reuse == -1)
           LOG(FATAL) << "No reuse dimension found in the body";
@@ -262,9 +284,14 @@ class ReuseBufferInserter final : public IRMutator {
         std::vector<VarExpr> reuse_loop_vars;
         for (size_t dim = 0; dim < ndim; dim++) {
           Expr index = min_list[dim];
+        //  LOG(INFO) << "min list[" << dim << "] " << min_list[dim];
           Expr reuse_index = Simplify(substitute(null_axis_subst_, index));
+        //  LOG(INFO) << "reuse index[" << dim << "] " << reuse_index;
+        //  LOG(INFO) << "reuse shape[" << dim << "] " << reuse_shape[dim];
+          
           // create a new variable if the shape is not one
           if (!is_one(reuse_shape[dim])) {
+            
             VarExpr new_loop_var(target->name_hint + "." + std::to_string(dim)); // TODO: fix the name
             // replace the RHS with the new loop var
             // special case : (x + ...) + r => (x + r) + ...
