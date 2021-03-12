@@ -5,7 +5,7 @@ from .tvm import expr as _expr
 from .tvm import ir_pass as _pass
 from .tvm.api import decl_buffer
 from .tvm._ffi.node import NodeGeneric
-from .debug import TensorError
+from .debug import APIError, TensorError
 from .schedule import Stage
 from . import util
 from . import debug
@@ -148,6 +148,7 @@ class TensorSlice(NodeGeneric, _expr.ExprOp):
         if not isinstance(indices, tuple):
             indices = (indices,)
         indices = self.indices + indices
+        indices = util.CastRemover().mutate(indices)
         index, bit, _ = util.get_index(self.tensor.shape, indices, 0)
         if not Stage.get_len():
             raise TensorError("Cannot set tensor elements without compute APIs")
@@ -177,6 +178,9 @@ class TensorSlice(NodeGeneric, _expr.ExprOp):
                                      index))
 
     def __getattr__(self, key):
+        if key in ('__array_priority__', '__array_struct__'):
+            raise APIError(
+                    "Cannot use NumPy numbers as left-hand-side operand")
         hcl_dtype = self.tensor.hcl_dtype
         if not isinstance(hcl_dtype, types.Struct):
             raise TensorError(
@@ -227,6 +231,7 @@ class TensorSlice(NodeGeneric, _expr.ExprOp):
     def asnode(self):
         if len(self.indices) < len(self.tensor.shape):
             raise TensorError("Accessing a slice of tensor is not allowed")
+        self.indices = util.CastRemover().mutate(self.indices)
         index, bit, _ = util.get_index(self.tensor.shape, self.indices, 0)
         if bit is None:
             return _make.Load(self._dtype, self.tensor.buf.data, index)
