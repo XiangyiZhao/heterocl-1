@@ -31,19 +31,31 @@ setup_kwargs = {
     "data_files": [('lib', LIB_LIST)]
 }
 
+# Include extern ip files
+if os.path.exists("MANIFEST.in"):
+    os.remove("MANIFEST.in")
+
+EXTERN_IP_DIR = os.path.join(CURRENT_DIR, "hlib/ip")
+with open("MANIFEST.in", "w") as fp:
+    for subdir, dirs, files in os.walk(EXTERN_IP_DIR):
+        for file_name in files:
+            if not (file_name.endswith(".pyc") or file_name.endswith(".py")):
+                filepath = subdir + os.sep + file_name
+                fp.write("include {}\n".format(filepath))
+
 setup(
   name = "hlib",
   version = "0.1",
   packages = find_packages(),
   install_requires=[
-      'numpy',
+      'numpy==1.18.5',
       'decorator',
       'networkx',
       'matplotlib',
       'backports.functools_lru_cache',
       'ordered_set',
       'keras==2.3.1',
-      'tensorflow==2.2.0',
+      'tensorflow==2.2.1',
       'tvm',
       ],
   **setup_kwargs)

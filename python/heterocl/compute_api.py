@@ -7,7 +7,7 @@ from .tvm import expr as _expr, stmt as _stmt, make as _make
 from .tvm.api import _IterVar, min_value
 from .util import get_index, get_name, get_type, get_tvm_dtype, make_for, CastRemover
 from .tensor import Scalar, Tensor, TensorSlice
-from .types import Struct, dtype_to_str
+from .types import Fixed, UFixed, Struct, dtype_to_str, dtype_to_hcl
 from .schedule import Stage
 from .debug import APIError
 from .dsl import if_, for_
@@ -137,7 +137,7 @@ def compute_body(name,
             index, _, _ = get_index(shape, indices, 0)
             stmt = stage.pop_stmt()
             stmt = ReplaceReturn(buffer_var, dtype, index).mutate(stmt)
-            stmt = make_for(indices, stmt, 0)
+            stmt = make_for(indices, stmt, 0, name)
         elif isinstance(ret, (tuple, list)):
             indices = lambda_ivs
             index, _, _ = get_index(shape, indices, 0)
@@ -159,12 +159,12 @@ def compute_body(name,
                                        _make.Cast(dtype, expr),
                                        index))
                 start = end
-            stmt = make_for(indices, stage.pop_stmt(), 0)
+            stmt = make_for(indices, stage.pop_stmt(), 0, name)
         elif isinstance(ret, (TensorSlice, Scalar, _expr.Expr, numbers.Number)):
             indices = lambda_ivs
             index, _, _ = get_index(shape, indices, 0)
             stage.emit(_make.Store(buffer_var, _make.Cast(dtype, ret), index))
-            stmt = make_for(indices, stage.pop_stmt(), 0)
+            stmt = make_for(indices, stage.pop_stmt(), 0, name)
         elif isinstance(ret, Tensor): # reduction
             ret_ivs = [_IterVar((0, ret.shape[i]), ret.name+"_i" + str(i), 0)
                        for i in range(0, len(ret.shape))]
@@ -182,11 +182,11 @@ def compute_body(name,
                 raise APIError("Incorrect number of reduction axes in lambda arguments")
             index, _, _ = get_index(shape, indices, 0)
             st = _make.Store(buffer_var, _make.Cast(dtype, ret[tuple(ret_ivs)]), index)
-            stage.emit(make_for(ret_ivs, st, 0))
+            stage.emit(make_for(ret_ivs, st, 0, name))
             stmt = stage.pop_stmt()
             stage.input_stages.remove(stage)
             if non_reduce_ivs:
-                stmt = make_for(non_reduce_ivs, stmt, 0)
+                stmt = make_for(non_reduce_ivs, stmt, 0, name)
         else:
             raise APIError("Unknown return type of the computation rule")
         # add attributes to the loop
@@ -194,8 +194,8 @@ def compute_body(name,
             stmt = _make.For(stmt.loop_var,
                              stmt.min, stmt.extent,
                              0, 0, stmt.body,
-                             list(attrs.keys()),
-                             list(attrs.values()))
+                             list(stmt.annotate_keys) + list(attrs.keys()),
+                             list(stmt.annotate_values) + list(attrs.values()))
         stage.emit(stmt)
         stage.axis_list = indices + stage.axis_list
 
@@ -385,7 +385,7 @@ def mutate(domain, fcompute, name=None):
         stage.stmt_stack.append([])
         fcompute(*var_list)
         body = stage.pop_stmt()
-        stage.emit(make_for(indices, body, 0))
+        stage.emit(make_for(indices, body, 0, name))
         stage.axis_list = indices + stage.axis_list
 
 def scalar(init=0, name=None, dtype=None):
@@ -699,6 +699,28 @@ def reduce_axis(lower, upper, name=None):
     name = get_name("ra", name)
     return _IterVar((lower, upper), name, 2)
 
+def const_tensor(values, name=None, dtype=None):
+    """Create a constant tensor
+    """
+    name = get_name("const", name)
+
+    if not isinstance(values, np.ndarray):
+        values = np.array(values)
+    shape = values.shape
+    values = values.flatten()
+    values = values.tolist()
+
+    tensor = None
+    with Stage(name, dtype, shape) as stage:
+        tensor = Tensor(shape, stage._hcl_dtype, name, stage._buf)
+        tensor.last_update = stage
+        stage.init_values = values
+        stage.is_const = True
+
+    tensor._tensor = stage._op
+    return tensor
+
+
 def reducer(init, freduce, dtype="int32", name=None):
     """Create a reducer for a reduction operation.
 
@@ -863,7 +885,7 @@ def reducer(init, freduce, dtype="int32", name=None):
             ret = reduce_body()
         body = stage.pop_stmt()
         stage.input_stages.add(out.last_update)
-        body = make_for(axis, body, 0)
+        body = make_for(axis, body, 0, stage.name)
         stage.axis_list += axis
         stage.emit(body)
         return ret
